@@ -1332,10 +1332,10 @@ def main():
     # Get OpenAI API key from environment variable or set it here
     import os
     openai_api_key = os.getenv('OPENAI_API_KEY')
-    
+    # run all the metrics on all the data with sample rate 1.0
     config = EvaluationConfig(
         level1_sample_rate=1.0,  # 100%
-        level2_sample_rate=0.10,  # 10%
+        level2_sample_rate=1.0,  # 10%
         level3_sample_rate=1.0,  # 1%
         openai_api_key=openai_api_key,  # Set from environment or pass directly
         openai_model="gpt-3.5-turbo"  # or "gpt-4" for better results

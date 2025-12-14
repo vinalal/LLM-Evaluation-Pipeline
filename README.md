@@ -112,6 +112,7 @@ The dashboard will open at `http://localhost:8501`
 
 ### System Overview
 
+Note the sampling rate in the pipeline.py file has been kept as 100% to show all metrics. It can be brought down for Level 2/3 for scalability.
 The evaluation pipeline consists of several modular components:
 
 ```
