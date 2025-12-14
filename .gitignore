@@ -1,0 +1,122 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# API Keys and secrets
+secrets.json
+config.json
+api_keys.txt
+
+# Output files
+evaluation_results.json
+*.log
+logs/
+*.out
+
+# Model files (if downloaded)
+models/
+*.pkl
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# Data files (optional - uncomment if you don't want to track sample data)
+# sample-*.json
+# *.csv
+# *.tsv
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# FastAPI
+.pytest_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# NLTK data (optional - uncomment if you don't want to track downloaded data)
+# nltk_data/
+
+# Project specific
+*.pyc
+__pycache__/
+
