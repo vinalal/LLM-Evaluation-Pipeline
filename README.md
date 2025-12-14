@@ -31,6 +31,11 @@ A production-ready Python pipeline for evaluating the reliability of Retrieval-A
   - Normalized Discounted Cumulative Gain (NDCG)
   - Noise Ratio
 
+- **Operational Metrics**:
+  - **Latency**: Derived from conversation timestamps (AI response time - User query time)
+  - **Cost Estimation**: Calculated based on token counts using GPT-4o pricing model
+  - **Retrieval Efficiency**: Waste ratio showing unused retrieved tokens
+
 - **Scalability**: Tiered sampling strategy to minimize latency and costs at scale
 - **Automatic Data Mapping**: Maps context vectors to conversation turns with fuzzy matching
 - **Production-Ready**: Handles missing dependencies gracefully
@@ -319,6 +324,43 @@ The evaluation pipeline consists of several modular components:
 | **Total** | | | **~$31/day** |
 
 **Comparison**: Running all metrics on all data would cost **~$2,000-5,000/day**
+
+### Cost Calculation Assumptions
+
+The pipeline calculates operational costs based on the following assumptions:
+
+#### Pricing Model (GPT-4o Pricing)
+- **Input Tokens**: $0.005 per 1,000 tokens
+- **Output Tokens**: $0.015 per 1,000 tokens
+
+#### Token Estimation
+- **Token Count Approximation**: 1 token ≈ 4 characters (standard approximation)
+- **Context Tokens**: Sum of `tokens` field from `vector_data` entries that are in `vectors_used`
+- **Query Tokens**: Estimated as `len(query_text) / 4`
+- **Response Tokens**: Estimated as `len(response_text) / 4`
+
+#### Cost Components
+1. **Input Cost**: `((Context_Tokens + Query_Tokens) / 1000) * $0.005`
+2. **Output Cost**: `(Response_Tokens / 1000) * $0.015`
+3. **Total Cost**: Input Cost + Output Cost
+
+#### Important Notes
+- **These are estimates**: Actual token counts may vary based on the tokenizer used
+- **Model-specific**: Pricing assumes GPT-4o; adjust constants for other models
+- **Retrieval Efficiency**: The pipeline also calculates waste ratio (unused retrieved tokens) to identify cost optimization opportunities
+- **Real-world costs**: May differ based on:
+  - Actual tokenizer used by the LLM provider
+  - Model-specific pricing (GPT-3.5, GPT-4, Claude, etc.)
+  - Volume discounts
+  - Regional pricing variations
+
+#### Latency Calculation Assumptions
+- **Source**: Derived from `created_at` timestamps in conversation turns
+- **Calculation**: `AI_Timestamp - User_Timestamp` (in milliseconds)
+- **Edge Cases**: 
+  - Negative or unreasonably large differences (>5 minutes) are flagged as `null`
+  - Indicates session breaks rather than actual generation latency
+- **Accuracy**: Depends on accurate timestamps in the conversation data
 
 ### Latency Optimization Strategies
 
@@ -629,8 +671,27 @@ The API provides asynchronous evaluation with immediate feedback:
       "hit_rate_at_5": 0.4,
       "hit_rate_at_10": 0.5
     },
-    "latency_ms": 125.5,
-    "cost_estimate": 0.000234
+    "operational_metrics": {
+      "latency_ms": 7000,
+      "cost_usd": 0.0024,
+      "token_counts": {
+        "prompt_tokens": 1200,
+        "completion_tokens": 150,
+        "total_tokens": 1350,
+        "context_tokens": 1100,
+        "query_tokens": 100,
+        "response_tokens": 150
+      },
+      "retrieval_efficiency": {
+        "waste_ratio": 0.35,
+        "total_retrieved_tokens": 5000,
+        "used_tokens": 3250,
+        "retrieved_count": 37,
+        "used_count": 4
+      }
+    },
+    "latency_ms": 7000,
+    "cost_estimate": 0.0024
   }
 ]
 ```

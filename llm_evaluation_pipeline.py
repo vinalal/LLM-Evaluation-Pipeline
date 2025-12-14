@@ -8,6 +8,7 @@ import json
 import random
 import time
 import math
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 from collections import Counter
@@ -71,8 +72,9 @@ class EvaluationResult:
     ai_response: str
     metrics: Dict[str, Any]
     retrieval_metrics: Optional[Dict[str, Any]] = None
-    latency_ms: Optional[float] = None
-    cost_estimate: Optional[float] = None
+    operational_metrics: Optional[Dict[str, Any]] = None
+    latency_ms: Optional[float] = None  # Deprecated: use operational_metrics.latency_ms
+    cost_estimate: Optional[float] = None  # Deprecated: use operational_metrics.cost_usd
 
 
 class DataMapper:
@@ -253,6 +255,40 @@ class DataMapper:
         return None
     
     @staticmethod
+    def get_user_turn(conversation: Dict, ai_turn_number: int) -> Optional[Dict]:
+        """Get the user turn dictionary that triggered the AI response (turn N-1)."""
+        turns = conversation.get('conversation_turns', [])
+        
+        for turn in turns:
+            if turn.get('turn') == ai_turn_number - 1 and turn.get('role') == 'User':
+                return turn
+        
+        return None
+    
+    @staticmethod
+    def get_ai_turn(conversation: Dict, turn_number: int) -> Optional[Dict]:
+        """Get the AI turn dictionary by turn number."""
+        turns = conversation.get('conversation_turns', [])
+        
+        for turn in turns:
+            if turn.get('turn') == turn_number and turn.get('role') in ['AI', 'AI/Chatbot', 'Chatbot']:
+                return turn
+        
+        return None
+    
+    @staticmethod
+    def get_last_user_turn(conversation: Dict) -> Optional[Dict]:
+        """Get the last user turn dictionary as fallback."""
+        turns = conversation.get('conversation_turns', [])
+        
+        # Iterate backwards to find the last user message
+        for turn in reversed(turns):
+            if turn.get('role') == 'User':
+                return turn
+        
+        return None
+    
+    @staticmethod
     def _normalize_text(text: str) -> str:
         """Normalize text for comparison."""
         # Remove markdown links, extra whitespace
@@ -302,6 +338,10 @@ class DataMapper:
             user_query = DataMapper.get_user_query_for_turn(conversation, turn_number)
             
             if user_query:
+                # Get turn dictionaries for operational metrics
+                user_turn = DataMapper.get_user_turn(conversation, turn_number)
+                ai_turn = DataMapper.get_ai_turn(conversation, turn_number)
+                
                 return [{
                     'user_query': user_query,
                     'ai_response': final_response,
@@ -311,16 +351,31 @@ class DataMapper:
                     'mapping_method': 'exact_match',
                     'vectors_used': DataMapper.extract_vectors_used(context_vectors),
                     'vectors_info': DataMapper.extract_vectors_info(context_vectors),
-                    'all_chunks_map': DataMapper.extract_all_context_chunks(context_vectors)
+                    'all_chunks_map': DataMapper.extract_all_context_chunks(context_vectors),
+                    'user_turn': user_turn,
+                    'ai_turn': ai_turn,
+                    'vectors_data': context_vectors.get('data', {}).get('vector_data', [])
                 }]
         
         # Fallback: Use last user query from conversation
         last_user_query = DataMapper.get_last_user_query(conversation)
+        last_user_turn = DataMapper.get_last_user_turn(conversation)
         
         if last_user_query:
             print(f"Warning: Could not find exact match for response. Using last user query as fallback.")
             print(f"Last user query: {last_user_query}")
             print(f"Final response: {final_response}")
+            
+            # Try to find the AI turn that matches final_response
+            ai_turn = None
+            turns = conversation.get('conversation_turns', [])
+            for turn in reversed(turns):
+                if turn.get('role') in ['AI', 'AI/Chatbot', 'Chatbot']:
+                    # Check if this turn's message matches final_response
+                    if DataMapper._texts_match(final_response, turn.get('message', '')):
+                        ai_turn = turn
+                        break
+            
             return [{
                 'user_query': last_user_query,
                 'ai_response': final_response,
@@ -330,12 +385,191 @@ class DataMapper:
                 'mapping_method': 'fallback_last_user_query',
                 'vectors_used': DataMapper.extract_vectors_used(context_vectors),
                 'vectors_info': DataMapper.extract_vectors_info(context_vectors),
-                'all_chunks_map': DataMapper.extract_all_context_chunks(context_vectors)
+                'all_chunks_map': DataMapper.extract_all_context_chunks(context_vectors),
+                'user_turn': last_user_turn,
+                'ai_turn': ai_turn,
+                'vectors_data': context_vectors.get('data', {}).get('vector_data', [])
             }]
         
         # If even fallback fails, return empty
         print(f"Warning: Could not find any user query in conversation. Skipping evaluation.")
         return []
+
+
+class OperationalMetricsCalculator:
+    """Calculates operational metrics: latency, cost, and retrieval efficiency."""
+    
+    # Pricing constants (GPT-4o pricing)
+    INPUT_PRICE_PER_1K = 0.005  # $0.005 per 1K input tokens
+    OUTPUT_PRICE_PER_1K = 0.015  # $0.015 per 1K output tokens
+    MAX_REASONABLE_LATENCY_MS = 5 * 60 * 1000  # 5 minutes in milliseconds
+    
+    @staticmethod
+    def calculate_inferred_latency(user_turn: Optional[Dict], ai_turn: Optional[Dict]) -> Optional[float]:
+        """
+        Calculate latency from timestamps.
+        Returns latency in milliseconds, or None if invalid.
+        """
+        if not user_turn or not ai_turn:
+            return None
+        
+        user_timestamp_str = user_turn.get('created_at')
+        ai_timestamp_str = ai_turn.get('created_at')
+        
+        if not user_timestamp_str or not ai_timestamp_str:
+            return None
+        
+        try:
+            # Parse ISO 8601 timestamps
+            user_timestamp = datetime.fromisoformat(user_timestamp_str.replace('Z', '+00:00'))
+            ai_timestamp = datetime.fromisoformat(ai_timestamp_str.replace('Z', '+00:00'))
+            
+            # Calculate difference in milliseconds
+            time_diff = (ai_timestamp - user_timestamp).total_seconds() * 1000
+            
+            # Edge case: negative or unreasonably large (session break)
+            if time_diff < 0 or time_diff > OperationalMetricsCalculator.MAX_REASONABLE_LATENCY_MS:
+                return None
+            
+            return round(time_diff, 2)
+        except (ValueError, AttributeError) as e:
+            print(f"Warning: Could not parse timestamps for latency calculation: {e}")
+            return None
+    
+    @staticmethod
+    def estimate_tokens(text: str) -> int:
+        """Estimate token count from text (rough approximation: 1 token ≈ 4 characters)."""
+        return max(1, len(text) // 4)
+    
+    @staticmethod
+    def calculate_estimated_cost(
+        query: str,
+        response: str,
+        vectors_data: List[Dict],
+        vectors_used_ids: List[int]
+    ) -> Dict[str, Any]:
+        """
+        Calculate estimated cost based on token counts.
+        Returns dict with cost breakdown and token counts.
+        """
+        # Convert vectors_used_ids to set for faster lookup
+        vectors_used_set = set(vectors_used_ids) if vectors_used_ids else set()
+        
+        # Calculate context tokens (only for vectors that were used)
+        context_tokens = 0
+        for vector in vectors_data:
+            vector_id = vector.get('id')
+            if vector_id is not None and int(vector_id) in vectors_used_set:
+                tokens = vector.get('tokens', 0)
+                if isinstance(tokens, (int, float)):
+                    context_tokens += int(tokens)
+        
+        # Estimate query tokens
+        query_tokens = OperationalMetricsCalculator.estimate_tokens(query)
+        
+        # Estimate response tokens
+        response_tokens = OperationalMetricsCalculator.estimate_tokens(response)
+        
+        # Calculate costs
+        input_tokens = context_tokens + query_tokens
+        output_tokens = response_tokens
+        total_tokens = input_tokens + output_tokens
+        
+        input_cost = (input_tokens / 1000) * OperationalMetricsCalculator.INPUT_PRICE_PER_1K
+        output_cost = (output_tokens / 1000) * OperationalMetricsCalculator.OUTPUT_PRICE_PER_1K
+        total_cost = input_cost + output_cost
+        
+        return {
+            'cost_usd': round(total_cost, 6),
+            'input_cost_usd': round(input_cost, 6),
+            'output_cost_usd': round(output_cost, 6),
+            'token_counts': {
+                'prompt_tokens': input_tokens,
+                'completion_tokens': output_tokens,
+                'total_tokens': total_tokens,
+                'context_tokens': context_tokens,
+                'query_tokens': query_tokens,
+                'response_tokens': response_tokens
+            }
+        }
+    
+    @staticmethod
+    def calculate_retrieval_efficiency(
+        vectors_data: List[Dict],
+        vectors_used_ids: List[int]
+    ) -> Dict[str, Any]:
+        """
+        Calculate retrieval efficiency (waste ratio).
+        Returns dict with efficiency metrics.
+        """
+        if not vectors_data:
+            return {'waste_ratio': 0.0, 'total_retrieved_tokens': 0, 'used_tokens': 0}
+        
+        # Convert vectors_used_ids to set for faster lookup
+        vectors_used_set = set(vectors_used_ids) if vectors_used_ids else set()
+        
+        # Calculate total retrieved tokens (all vectors)
+        total_retrieved_tokens = 0
+        for vector in vectors_data:
+            tokens = vector.get('tokens', 0)
+            if isinstance(tokens, (int, float)):
+                total_retrieved_tokens += int(tokens)
+        
+        # Calculate used tokens (only vectors in vectors_used)
+        used_tokens = 0
+        for vector in vectors_data:
+            vector_id = vector.get('id')
+            if vector_id is not None and int(vector_id) in vectors_used_set:
+                tokens = vector.get('tokens', 0)
+                if isinstance(tokens, (int, float)):
+                    used_tokens += int(tokens)
+        
+        # Calculate waste ratio
+        if total_retrieved_tokens == 0:
+            waste_ratio = 0.0
+        else:
+            waste_ratio = 1.0 - (used_tokens / total_retrieved_tokens)
+        
+        return {
+            'waste_ratio': round(max(0.0, min(1.0, waste_ratio)), 4),
+            'total_retrieved_tokens': total_retrieved_tokens,
+            'used_tokens': used_tokens,
+            'retrieved_count': len(vectors_data),
+            'used_count': len(vectors_used_ids) if vectors_used_ids else 0
+        }
+    
+    @staticmethod
+    def calculate_operational_metrics(
+        user_query: str,
+        ai_response: str,
+        user_turn: Optional[Dict],
+        ai_turn: Optional[Dict],
+        vectors_data: List[Dict],
+        vectors_used_ids: List[int]
+    ) -> Dict[str, Any]:
+        """
+        Calculate all operational metrics.
+        Returns dict with latency, cost, and retrieval efficiency.
+        """
+        # Calculate latency
+        latency_ms = OperationalMetricsCalculator.calculate_inferred_latency(user_turn, ai_turn)
+        
+        # Calculate cost
+        cost_metrics = OperationalMetricsCalculator.calculate_estimated_cost(
+            user_query, ai_response, vectors_data, vectors_used_ids
+        )
+        
+        # Calculate retrieval efficiency
+        efficiency_metrics = OperationalMetricsCalculator.calculate_retrieval_efficiency(
+            vectors_data, vectors_used_ids
+        )
+        
+        return {
+            'latency_ms': latency_ms,
+            'cost_usd': cost_metrics['cost_usd'],
+            'token_counts': cost_metrics['token_counts'],
+            'retrieval_efficiency': efficiency_metrics
+        }
 
 
 class Level1Evaluator:
@@ -1174,7 +1408,8 @@ class EvaluationPipeline:
     
     def evaluate_single(self, user_query: str, ai_response: str, context_chunks: List[str], 
                        message_id: Optional[str] = None, vectors_info: Optional[List[Dict]] = None,
-                       vectors_used: Optional[List[int]] = None) -> EvaluationResult:
+                       vectors_used: Optional[List[int]] = None, user_turn: Optional[Dict] = None,
+                       ai_turn: Optional[Dict] = None, vectors_data: Optional[List[Dict]] = None) -> EvaluationResult:
         """Evaluate a single query-response pair."""
         start_time = time.time()
         
@@ -1212,8 +1447,16 @@ class EvaluationPipeline:
         if vectors_info is not None and vectors_used is not None:
             retrieval_metrics = RetrievalEvaluator.evaluate(vectors_info, vectors_used)
         
-        latency_ms = (time.time() - start_time) * 1000
-        cost_estimate = self.estimate_cost(user_query, ai_response, context_chunks)
+        # Operational Metrics (latency, cost, retrieval efficiency)
+        operational_metrics = None
+        if user_turn is not None and ai_turn is not None and vectors_data is not None and vectors_used is not None:
+            operational_metrics = OperationalMetricsCalculator.calculate_operational_metrics(
+                user_query, ai_response, user_turn, ai_turn, vectors_data, vectors_used
+            )
+        
+        # Legacy metrics (for backward compatibility)
+        latency_ms = operational_metrics.get('latency_ms') if operational_metrics else None
+        cost_estimate = operational_metrics.get('cost_usd') if operational_metrics else None
         
         return EvaluationResult(
             message_id=message_id,
@@ -1221,7 +1464,8 @@ class EvaluationPipeline:
             ai_response=ai_response,
             metrics=metrics,
             retrieval_metrics=retrieval_metrics,
-            latency_ms=round(latency_ms, 2),
+            operational_metrics=operational_metrics,
+            latency_ms=latency_ms,
             cost_estimate=cost_estimate
         )
     
@@ -1242,7 +1486,10 @@ class EvaluationPipeline:
                 context_chunks=data['context_chunks'],
                 message_id=data.get('message_id'),
                 vectors_info=data.get('vectors_info'),
-                vectors_used=data.get('vectors_used')
+                vectors_used=data.get('vectors_used'),
+                user_turn=data.get('user_turn'),
+                ai_turn=data.get('ai_turn'),
+                vectors_data=data.get('vectors_data')
             )
             results.append(asdict(result))
         

@@ -16,7 +16,8 @@ from llm_evaluation_pipeline import (
     EvaluationConfig,
     EvaluationPipeline,
     DataMapper,
-    RetrievalEvaluator
+    RetrievalEvaluator,
+    OperationalMetricsCalculator
 )
 
 app = FastAPI(title="LLM Evaluation API", version="1.0.0")
@@ -162,6 +163,10 @@ async def evaluate(
                 user_query = DataMapper.get_user_query_for_turn(conversation, turn_number)
                 
                 if user_query:
+                    # Get turn dictionaries for operational metrics
+                    user_turn = DataMapper.get_user_turn(conversation, turn_number)
+                    ai_turn = DataMapper.get_ai_turn(conversation, turn_number)
+                    
                     mapped_data.append({
                         'user_query': user_query,
                         'ai_response': final_response,
@@ -171,13 +176,28 @@ async def evaluate(
                         'mapping_method': 'exact_match',
                         'vectors_used': DataMapper.extract_vectors_used(context_vectors),
                         'vectors_info': DataMapper.extract_vectors_info(context_vectors),
-                        'all_chunks_map': DataMapper.extract_all_context_chunks(context_vectors)
+                        'all_chunks_map': DataMapper.extract_all_context_chunks(context_vectors),
+                        'user_turn': user_turn,
+                        'ai_turn': ai_turn,
+                        'vectors_data': context_vectors.get('data', {}).get('vector_data', [])
                     })
             
             # Fallback: Use last user query
             if not mapped_data:
                 last_user_query = DataMapper.get_last_user_query(conversation)
+                last_user_turn = DataMapper.get_last_user_turn(conversation)
+                
                 if last_user_query:
+                    # Try to find the AI turn that matches final_response
+                    ai_turn = None
+                    turns = conversation.get('conversation_turns', [])
+                    for turn in reversed(turns):
+                        if turn.get('role') in ['AI', 'AI/Chatbot', 'Chatbot']:
+                            # Check if this turn's message matches final_response
+                            if DataMapper._texts_match(final_response, turn.get('message', '')):
+                                ai_turn = turn
+                                break
+                    
                     mapped_data.append({
                         'user_query': last_user_query,
                         'ai_response': final_response,
@@ -187,7 +207,10 @@ async def evaluate(
                         'mapping_method': 'fallback_last_user_query',
                         'vectors_used': DataMapper.extract_vectors_used(context_vectors),
                         'vectors_info': DataMapper.extract_vectors_info(context_vectors),
-                        'all_chunks_map': DataMapper.extract_all_context_chunks(context_vectors)
+                        'all_chunks_map': DataMapper.extract_all_context_chunks(context_vectors),
+                        'user_turn': last_user_turn,
+                        'ai_turn': ai_turn,
+                        'vectors_data': context_vectors.get('data', {}).get('vector_data', [])
                     })
         
         if not mapped_data:
@@ -220,6 +243,9 @@ async def evaluate(
             message_id = data.get('message_id')
             vectors_info = data.get('vectors_info')
             vectors_used = data.get('vectors_used')
+            user_turn = data.get('user_turn')
+            ai_turn = data.get('ai_turn')
+            vectors_data = data.get('vectors_data', [])
             
             # Level 1: Simple metrics (fast)
             level1_metrics = pipeline.level1_evaluator.evaluate(
@@ -231,12 +257,20 @@ async def evaluate(
             if vectors_info is not None and vectors_used is not None:
                 retrieval_metrics = RetrievalEvaluator.evaluate(vectors_info, vectors_used)
             
+            # Operational metrics (latency, cost, retrieval efficiency)
+            operational_metrics = None
+            if user_turn is not None and ai_turn is not None and vectors_data and vectors_used is not None:
+                operational_metrics = OperationalMetricsCalculator.calculate_operational_metrics(
+                    user_query, ai_response, user_turn, ai_turn, vectors_data, vectors_used
+                )
+            
             immediate_results.append({
                 'message_id': message_id,
                 'metrics': {
                     'level1': level1_metrics,
                     'retrieval': retrieval_metrics
-                }
+                },
+                'operational_metrics': operational_metrics
             })
         
         # Offload Level 2 and 3 to background tasks
